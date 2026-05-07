@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
+const { spawn } = require('child_process');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -125,7 +126,36 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log('Caro Proxy running on port ' + PORT);
+function saveUrlToFirestore(url) {
+  const body = JSON.stringify({ fields: { url: { stringValue: url } } });
+  const options = {
+    hostname: 'firestore.googleapis.com',
+    path: '/v1/projects/' + FIREBASE_PROJECT + '/databases/(default)/documents/settings/proxyGateway?key=' + FIREBASE_API_KEY,
+    method: 'PATCH',
+    family: 4,
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  };
+  const req = https.request(options, (r) => { r.on('data', () => {}); r.on('end', () => console.log('URL saved:', url)); });
+  req.on('error', (e) => console.error('Firestore error:', e.message));
+  req.write(body); req.end();
+}
+
+function startTunnel() {
+  console.log('Starting tunnel...');
+  const cf = spawn('cloudflared', ['tunnel', '--url', 'http://localhost:4000']);
+  cf.stderr.on('data', (data) => {
+    const text = data.toString();
+    const match = text.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/);
+    if (match) { console.log('Tunnel URL:', match[0]); saveUrlToFirestore(match[0]); }
+  });
+  cf.on('close', (code) => {
+    const delay = code === 0 ? 3000 : 15000;
+    console.log('Restarting tunnel in ' + delay/1000 + 's...');
+    setTimeout(startTunnel, delay);
+  });
+}
+
+app.listen(4000, () => {
+  console.log('Caro Proxy running on port 4000');
+  startTunnel();
 });
