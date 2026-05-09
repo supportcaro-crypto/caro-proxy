@@ -126,7 +126,10 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-function saveUrlToFirestore(url) {
+let currentTunnelUrl = null;
+let saveInterval = null;
+
+function saveUrlToFirestore(url, retry) {
   const body = JSON.stringify({ fields: { url: { stringValue: url } } });
   const options = {
     hostname: 'firestore.googleapis.com',
@@ -135,9 +138,28 @@ function saveUrlToFirestore(url) {
     family: 4,
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
   };
-  const req = https.request(options, (r) => { r.on('data', () => {}); r.on('end', () => console.log('URL saved:', url)); });
-  req.on('error', (e) => console.error('Firestore error:', e.message));
+  const req = https.request(options, (r) => {
+    r.on('data', () => {});
+    r.on('end', () => console.log('URL saved:', url));
+  });
+  req.on('error', (e) => {
+    console.error('Firestore error:', e.message);
+    if (retry !== false) {
+      console.log('Retrying in 15s...');
+      setTimeout(() => saveUrlToFirestore(url, true), 15000);
+    }
+  });
   req.write(body); req.end();
+}
+
+function startPeriodicSave() {
+  if (saveInterval) clearInterval(saveInterval);
+  saveInterval = setInterval(() => {
+    if (currentTunnelUrl) {
+      console.log('Periodic save:', currentTunnelUrl);
+      saveUrlToFirestore(currentTunnelUrl, false);
+    }
+  }, 30000);
 }
 
 function startTunnel() {
@@ -146,9 +168,14 @@ function startTunnel() {
   cf.stderr.on('data', (data) => {
     const text = data.toString();
     const match = text.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/);
-    if (match) { console.log('Tunnel URL:', match[0]); saveUrlToFirestore(match[0]); }
+    if (match) {
+      currentTunnelUrl = match[0];
+      console.log('Tunnel URL:', currentTunnelUrl);
+      saveUrlToFirestore(currentTunnelUrl, true);
+    }
   });
   cf.on('close', (code) => {
+    currentTunnelUrl = null;
     const delay = code === 0 ? 3000 : 15000;
     console.log('Restarting tunnel in ' + delay/1000 + 's...');
     setTimeout(startTunnel, delay);
@@ -158,4 +185,5 @@ function startTunnel() {
 app.listen(4000, () => {
   console.log('Caro Proxy running on port 4000');
   startTunnel();
+  startPeriodicSave();
 });
